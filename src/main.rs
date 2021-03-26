@@ -1,6 +1,6 @@
 use std::{
     fmt::Debug,
-    fs::{File,self},
+    fs::{self, File},
     io::BufWriter,
     path::{Path, PathBuf},
 };
@@ -30,7 +30,11 @@ fn main() -> Result<()> {
     fs::create_dir(opt.outdir.clone()).context("Failed to create the output directory.")?;
 
     for (i, image) in Interpolator::new(images, opt.n_frames).enumerate() {
-        image.save(&format!("{}/frame_{:05}", opt.outdir.to_str().unwrap(), i))?;
+        image.save(&format!(
+            "{}/frame_{:05}.png",
+            opt.outdir.to_str().unwrap(),
+            i
+        ))?;
     }
 
     Ok(())
