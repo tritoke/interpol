@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{anyhow, ensure, Context, Result};
 use rayon::prelude::*;
 use rgb::{ComponentBytes, FromSlice};
 use structopt::StructOpt;
@@ -15,12 +15,22 @@ type Pixel = rgb::RGB<u8>;
 fn main() -> Result<()> {
     let opt = Opt::from_args();
 
+    let outdir = opt.outdir.to_str().ok_or(anyhow!(
+        "Failed to convert output directory {:?} to a string.",
+        opt.outdir.clone()
+    ))?;
+
+    // first ensure the output directory is empty so we don't do more work than we need to
+    fs::create_dir(outdir).with_context(|| format!("Failed to create output directory {:?}.", outdir))?;
+
+    // read in all the images and fail if any of them failed to load
     let images: Vec<_> = opt
         .images
         .into_iter()
         .map(Image::new_from_path)
         .collect::<Result<_>>()?;
 
+    // ensure all the images are the same shape
     ensure!(
         images[1..]
             .iter()
@@ -28,12 +38,11 @@ fn main() -> Result<()> {
         "All of the images must have the same width and height."
     );
 
-    fs::create_dir(opt.outdir.clone()).context("Failed to create the output directory.")?;
-
+    // setup for the frame generation
     let total_frames = (images.len() - 1) * opt.n_frames;
     let n_frames = opt.n_frames;
-    let outdir = opt.outdir.to_str().unwrap();
 
+    // generate all the frames in parallel
     (0..=total_frames)
         .into_par_iter()
         .map(|n| {
