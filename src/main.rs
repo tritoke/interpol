@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::{ensure, Context, Result};
+use rayon::prelude::*;
 use rgb::{ComponentBytes, FromSlice};
 use structopt::StructOpt;
 
@@ -29,15 +30,38 @@ fn main() -> Result<()> {
 
     fs::create_dir(opt.outdir.clone()).context("Failed to create the output directory.")?;
 
-    for (i, image) in Interpolator::new(images, opt.n_frames).enumerate() {
-        image.save(&format!(
-            "{}/frame_{:05}.png",
-            opt.outdir.to_str().unwrap(),
-            i
-        ))?;
-    }
+    let total_frames = (images.len() - 1) * opt.n_frames;
+    let n_frames = opt.n_frames;
+    let outdir = opt.outdir.to_str().unwrap();
 
-    Ok(())
+    (0..=total_frames)
+        .into_par_iter()
+        .map(|n| {
+            let image_no = n / n_frames;
+            let frame_no = n % n_frames;
+
+            // this shouldn't panic because image_no is derived from the length of the images
+            // array and the case for the final "end" image is handled
+            let result_image = if frame_no == 0 {
+                images[image_no].clone()
+            } else {
+                let mu = frame_no as f64 / n_frames as f64;
+                interpolate(mu, &images[image_no], &images[image_no + 1])?
+            };
+
+            result_image.save(&format!("{}/frame_{:09}.png", outdir, n))
+        })
+        .collect()
+}
+
+fn interpolate(mu: f64, im1: &Image, im2: &Image) -> Result<Image> {
+    let new_image_data: Vec<_> = im1
+        .data
+        .iter()
+        .zip(im2.data.iter())
+        .map(|(s, e)| smooth(mu, *s, *e))
+        .collect();
+    Image::new_from_parts(new_image_data, im1.width, im1.height)
 }
 
 #[derive(Debug, StructOpt)]
@@ -53,73 +77,6 @@ struct Opt {
     /// The number of frames between each target image in the output frames
     #[structopt(short, long, default_value = "50")]
     n_frames: usize,
-}
-
-/// This structure holds the information for generating each frame of the interpolation.
-#[derive(Debug, Clone)]
-struct Interpolator {
-    /// the images to interpolate between
-    images: Vec<Image>,
-    /// the "start" image of the current interpolation
-    image_no: usize,
-    /// the frame of the current interpolation
-    frame_no: usize,
-    /// the number of steps to do per interpolation
-    steps_per_interpolation: usize,
-}
-
-impl Interpolator {
-    fn new(images: Vec<Image>, steps: usize) -> Self {
-        Self {
-            images,
-            image_no: 0,
-            frame_no: 0,
-            steps_per_interpolation: steps,
-        }
-    }
-}
-
-impl Iterator for Interpolator {
-    type Item = Image;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        // increment the frame number
-        let frame_num = self.frame_no;
-        self.frame_no += 1;
-
-        //dbg!(frame_num, self.frame_no, self.image_no);
-
-        if frame_num >= self.steps_per_interpolation {
-            // we are about to generate frame 0 of the next set so set it to 1
-            self.frame_no = 1;
-            self.image_no += 1;
-
-            // get the next image if it exists and clone it inside the option
-            self.images.get(self.image_no).map(Image::clone)
-        } else if let Some(start) = self.images.get(self.image_no) {
-            if let Some(end) = self.images.get(self.image_no + 1) {
-                // interpolate between start and end images
-                let mu = frame_num as f64 / self.steps_per_interpolation as f64;
-
-                let data: Vec<_> = start
-                    .data
-                    .iter()
-                    .zip(end.data.iter())
-                    .map(|(c1, c2)| smooth(mu, *c1, *c2))
-                    .collect();
-
-                Some(
-                    Image::new_from_parts(&data, start.width, start.height)
-                        .context("Failed to create new image from parts.")
-                        .unwrap(),
-                )
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
 }
 
 /// This func takes 2 pixels and a float in [0.0..1.0]
@@ -162,17 +119,17 @@ impl Image {
             .next_frame(&mut buf)
             .with_context(|| format!("Reader failed to read any frames from {:?}", path))?;
 
-        Self::new_from_parts(buf.as_rgb(), info.width, info.height)
+        Self::new_from_parts(buf.as_rgb().into(), info.width, info.height)
     }
 
-    fn new_from_parts(data: &[Pixel], width: u32, height: u32) -> Result<Self> {
+    fn new_from_parts(data: Vec<Pixel>, width: u32, height: u32) -> Result<Self> {
         ensure!(
             data.len() as u32 == width * height,
             "Data must match the dimensions given in width and height."
         );
 
         Ok(Self {
-            data: data.into(),
+            data,
             width,
             height,
         })
